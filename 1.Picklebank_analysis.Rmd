@@ -1,0 +1,804 @@
+---
+title: "Pickle Bank"
+author: "Jack V Johnson"
+date: "2024-10-02"
+output: html_document
+---
+
+#Set up work space
+
+```{r}
+
+# clear workspace
+rm(list=ls())
+
+# libraries
+
+library(tidyverse)
+library(fishualize)
+library(patchwork)
+library(sf)
+library(ggmap)
+#library(ggsn)
+library(ggspatial)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(performance)
+library(FSA)
+library(vegan)
+library(ggpubr)
+
+#########################################################################################
+################################## working directories ##################################
+
+output_directory <-  "C:/Users/jackv/OneDrive - Central Caribbean Marine Institute/Projects/BANKS/Picklebank/Output"
+
+data_directory <-  "C:/Users/jackv/OneDrive - Central Caribbean Marine Institute/Projects/BANKS/Picklebank/Data"
+
+
+my_theme <- theme_classic() +
+  theme(axis.title.x = element_text(size = 20, color = "black"), axis.title.y = element_text(size = 20, color = "black"), text=element_text(size=16)) +
+  theme(axis.text.y = element_text(size=16, color="black"), axis.text.x = element_text(size=16, color="black", angle = 0, vjust = .0)) +
+  theme(legend.text = element_text(size = 16),
+        legend.title = element_text(size = 18, face = "bold")) +
+  theme(plot.title = element_text(size = 22, face = "bold"))
+
+
+```
+
+##read in data
+
+```{r}
+
+# read in data and tidy
+df <- read.csv(file.path(data_directory, 'pickle_bank_fish_data_edited.csv'))
+df <- df[,c(1:19)]
+df <- na.omit(df)
+
+table(df$depth)
+
+df <- df %>%
+  mutate(depth_cat = case_when(
+    depth %in% c(85, 88, 89) ~ "25",
+    depth %in% c(115, 116) ~ "35",
+    depth %in% c(145, 150) ~ "45",
+    TRUE ~ NA_character_  # This will handle any values not in the specified groups
+  ))
+
+df$depth_cat <- factor(df$depth_cat, levels = c("45","35",'25'))
+
+# basic data tidying
+df <- df %>%
+  mutate(site = case_when(
+    site == 1 ~ 'A',
+    site == 2 ~ 'B',
+    site == 3 ~ 'C',
+    site == 4 ~ 'D',
+    site == 5 ~ 'E',
+    site == 6 ~ 'F',
+    site == 7 ~ 'G',
+    site == 8 ~ 'H',
+    TRUE ~ as.character(site)  # fallback if none of the conditions match
+  ))
+
+
+df <- df %>%
+  mutate(sample = str_c(site, transect))
+
+df$count <- as.numeric(df$count)
+df$biomass <- as.numeric(df$biomass)
+df <- na.omit(df)
+
+#only 2 transects for 115ft so can drop 
+
+df <- subset(df, depth_cat !='35')
+
+```
+
+#Summary stats
+
+```{r}
+
+summary_df <- df %>%
+  group_by(sample, depth_cat) %>%
+  summarise(
+    sum_biomass = sum(biomass, na.rm = TRUE),
+    sum_abundance = sum(count, na.rm = TRUE), 
+    species_richness = n_distinct(fish_spp)) 
+
+hist(summary_df$sum_biomass)
+hist(summary_df$sum_abundance)
+hist(summary_df$species_richness)
+
+shapiro.test(summary_df$species_richness)
+shapiro.test(summary_df$sum_biomass)
+shapiro.test(summary_df$sum_abundance)
+
+m_rich <- aov(species_richness ~ depth_cat, data = summary_df)
+summary(m_rich)
+
+m_biomass <- aov(log1p(sum_biomass) ~ depth_cat, data = summary_df)
+summary(m_biomass)
+
+wilcox.test(sum_abundance ~ depth_cat, data = summary_df)
+
+```
+
+##boxplots
+```{r}
+
+p1 <- ggplot(summary_df, aes(depth_cat, species_richness, fill = depth_cat)) +
+  geom_boxplot() +
+  geom_point() +
+  coord_flip() +
+  scale_fill_manual(values = c('25' = '#87CEEB','45' = '#4169E1')) +
+  labs(x='Depth (m)', y='Total species richness') +
+  my_theme +
+  theme(legend.position = 'none') +
+    geom_signif(comparisons = list(c("25", "45")), 
+              map_signif_level=TRUE,
+              textsize = 6,
+              size = 0.6) 
+p1
+
+p2 <-ggplot(summary_df, aes(depth_cat, sum_biomass/1000, fill = depth_cat)) +
+  geom_boxplot() +
+  geom_point() +
+  coord_flip() +
+  scale_fill_manual(values = c('25' = '#87CEEB','45' = '#4169E1')) +
+  labs(x='Depth (m)', y='Total biomass (kg)') +
+  my_theme +
+  theme(legend.position = 'none') 
+p2
+
+p3 <- ggplot(summary_df, aes(depth_cat, sum_abundance, fill = depth_cat)) +
+  geom_boxplot() +
+  geom_point() +
+  coord_flip() +
+  scale_fill_manual(values = c('25' = '#87CEEB','45' = '#4169E1')) +
+  labs(x='Depth (m)', y='Total abundance (n)') +
+  my_theme +
+  theme(legend.position = 'none') +
+  geom_signif(comparisons = list(c("25", "45")), 
+              map_signif_level=TRUE,
+              textsize = 6,
+              size = 0.6) +
+  scale_y_log10()
+p3
+
+p1+p2+p3
+
+```
+## Shannon diversity
+```{r}
+
+df2 <- df %>%
+  group_by(fish_spp, depth_cat, sample) %>%
+  summarise(abundance = sum(count)) %>%
+  group_by(sample, depth_cat) %>%
+  summarise(diversity = vegan::diversity(abundance, index = 'shannon'))
+
+
+p_div <- ggplot(df2, aes(depth_cat, diversity, fill = depth_cat)) +
+  geom_boxplot() +
+  geom_point() +
+  coord_flip() +
+  scale_fill_manual(values = c('25' = '#87CEEB','45' = '#4169E1')) +
+  labs(x='Depth (m)', y='Shannon diversity') +
+  my_theme +
+  theme(legend.position = 'none') +
+  geom_signif(comparisons = list(c("25", "45")), 
+              map_signif_level=TRUE,
+              textsize = 6,
+              size = 0.6) 
+p_div
+
+hist(df2$diversity)
+shapiro.test(df2$diversity)
+wilcox.test(diversity ~ depth_cat, data = df2)
+
+```
+
+
+
+##ordination of communities at depths
+
+```{r}
+
+# community dataframe
+ord_df <-df %>%
+  group_by(sample, depth_cat, fish_spp) %>%
+  summarise(total_abundance = sum(count)) %>%
+  pivot_wider(names_from= fish_spp, values_from = total_abundance)
+
+# NA means zero abudnance of said species
+ord_df[is.na(ord_df)] <- 0
+
+# community matrix
+mat1 <- as.matrix(ord_df[,-c(1:2)])
+# sqrt transform to make allow model fit 
+mat1 <- sqrt(mat1)
+# create a distance matrix
+dist1 <- vegdist(mat1, method = 'bray')
+
+# run a permanova for statisical comparison
+set.seed(123)
+comp <- adonis2(dist1~as.factor(ord_df$depth_cat), data = ord_df, permutations = 999)
+comp
+
+#nMDS
+set.seed(123)
+m1 <- metaMDS(mat1, distance = 'bray', k=2, autotransform = T, trymax = 100)
+m1
+
+stressplot(m1)
+
+
+# extract scores to plot on ggplot
+scores <- data.frame(m1$points)
+
+scores$depth <- ord_df$depth_cat
+
+# plot
+
+scores$depth <- factor(scores$depth, levels = c('25', '45'))
+
+p_ord <- ggplot(data=scores,aes(x=MDS1, y=MDS2, colour=depth, fill = depth)) +
+  stat_ellipse(type='t', level = .95, size =1.5, linetype = 1)+
+  geom_point(position=position_jitter(.1), shape=19, size = 5)+
+  my_theme +
+  scale_color_manual(values=c('#87CEEB','#4169E1')) +
+  scale_fill_manual(values=c('#87CEEB','#4169E1')) +
+  labs(x='MDS1', y='MDS2', fill = 'Depth (m)', colour = 'Depth (m)') +
+  annotate("text", x = -0.5, y = -.9, label = "Stress = 0.191", size = 6)
+p_ord
+
+png(file=file.path(output_directory, "Ordination_depth.png"), height = 2000, width = 3000, res = 350)
+p_ord
+dev.off()
+
+tiff(file=file.path(output_directory, "Ordination_depth.tif"), height = 2000, width = 3000, res = 350)
+p_ord
+dev.off()
+
+
+```
+##combine summary plots
+```{r}
+
+(p_ord + p1) / (p2+p3) + plot_layout(guides = 'collect')
+
+png(file=file.path(output_directory, "summary_plots.png"), height = 4500, width = 5000, res = 350)
+(p1 + p2) / (p3 + p_div) / (p_ord + guide_area() +
+  plot_layout(guides = 'collect')) + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)', '(D)', '(E)', ''))) & theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+tiff(file=file.path(output_directory, "summary_plots.tif"), height = 5500, width = 5000, res = 350)
+(p1 + p2) / (p3 + p_div) / (p_ord + guide_area() +
+  plot_layout(guides = 'collect')) + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)', '(D)', '(E)', ''))) & theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+jpeg(file=file.path(output_directory, "Figure_2.jpg"), height = 5500, width = 5000, res = 350)
+(p1 + p2) / (p3 + p_div) / (p_ord + guide_area() +
+  plot_layout(guides = 'collect')) + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)', '(D)', '(E)', ''))) & theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+```
+
+#Family and species at different depths
+##biomass
+```{r}
+
+# tidy workspace
+rm(comp, hull_deep, hull_df, hull_shallow, m_biomass, m_rich, m1, mat1, ord_df, p_ord, p1, p2, p3, scores, summary_df)
+
+# create family dataframe 
+
+family_df <- df %>%
+  group_by(latin_family, depth_cat, sample) %>%
+  summarise(sum_biomass = sum(biomass),
+            sum_abundance = sum(count)) %>%
+  group_by(latin_family, depth_cat) %>%
+  summarise(mean_biomass = mean(sum_biomass),
+            se_biomass = sd(sum_biomass,  na.rm = TRUE)/sqrt(n()),
+            mean_abundance = mean(sum_abundance),
+            se_abundance=sd(sum_abundance)/sqrt(n()))
+
+family_df$mean_biomass <- family_df$mean_biomass/1000
+family_df$se_biomass <- family_df$se_biomass/1000
+family_df <- na.omit(family_df)
+
+
+
+p1 <- ggplot(subset(family_df, depth_cat == '25'), aes(x = fct_reorder(latin_family, mean_biomass), y = mean_biomass)) +
+  geom_bar(stat = "identity", fill = '#87CEEB') +  # Barplot of means
+  geom_errorbar(aes(ymin = mean_biomass - se_biomass, ymax = mean_biomass + se_biomass), 
+                color = 'black', width = .5, size =1) +  # Add error bars for SE
+  coord_flip() +  # Flip for horizontal barplot
+  labs(x = "Family", y = "Mean biomass (kg)", title = '25 (m)') +
+  my_theme +
+  theme(legend.position = 'none') +
+  #theme(legend.position = c(.7, 0.2), 
+  #      legend.direction = "horizontal",
+  #      legend.title.position = "top",
+  #      legend.text = element_text(hjust = .3, vjust = .1, angle = 315, size = 12)) +
+  theme(legend.title.position = "right",
+  legend.text = element_text(hjust = 0, vjust = .5, angle = 0, size = 12)) +
+  theme(axis.text.y = element_text(face = "italic")) 
+p1
+
+p2 <- ggplot(subset(family_df, depth_cat == '45'), aes(x = fct_reorder(latin_family, mean_biomass), y = mean_biomass)) +
+  geom_bar(stat = "identity", fill = '#4169E1') +  # Barplot of means
+  geom_errorbar(aes(ymin = mean_biomass - se_biomass, ymax = mean_biomass + se_biomass), 
+                color = 'black', width = .5, size =1) +  # Add error bars for SE
+  coord_flip() +  # Flip for horizontal barplot
+  labs(x = "", y = "Mean biomass (kg)", title = '45 (m)') +
+  my_theme +
+  theme(legend.position = 'none') +
+  #theme(legend.position = c(.7, 0.2), 
+  #      legend.direction = "horizontal",
+  #      legend.title.position = "top",
+  #      legend.text = element_text(hjust = .3, vjust = .1, angle = 315, size = 12)) +
+  theme(legend.title.position = "right",
+  legend.text = element_text(hjust = 0, vjust = .5, angle = 0, size = 12)) +
+  theme(axis.text.y = element_text(face = "italic")) 
+p2
+
+p1 + p2
+
+```
+
+##abundance
+
+```{r}
+
+p3 <- ggplot(subset(family_df, depth_cat == '25'), aes(x = fct_reorder(latin_family, mean_abundance), y = mean_abundance)) +
+  geom_bar(stat = "identity", fill = '#87CEEB') +  # Barplot of means
+  geom_errorbar(aes(ymin = mean_abundance - se_abundance, ymax = mean_abundance + se_abundance), 
+                color = 'black', width = .5, size =1) +  # Add error bars for SE
+  coord_flip() +  # Flip for horizontal barplot
+  labs(x = "Family", y = "Mean abundance", title = '25 (m)') +
+  my_theme +
+  theme(legend.position = 'none') +
+  #theme(legend.position = c(.7, 0.2), 
+  #      legend.direction = "horizontal",
+  #      legend.title.position = "top",
+  #      legend.text = element_text(hjust = .3, vjust = .1, angle = 315, size = 12)) +
+  theme(legend.title.position = "right",
+  legend.text = element_text(hjust = 0, vjust = .5, angle = 0, size = 12)) +
+  theme(axis.text.y = element_text(face = "italic")) +
+  scale_y_log10()
+p3
+
+p4 <- ggplot(subset(family_df, depth_cat == '45'), aes(x = fct_reorder(latin_family, mean_abundance), y = mean_abundance)) +
+  geom_bar(stat = "identity", fill = '#4169E1') +  # Barplot of means
+  geom_errorbar(aes(ymin = mean_abundance - se_abundance, ymax = mean_abundance + se_abundance), 
+                color = 'black', width = .5, size =1) +  # Add error bars for SE
+  coord_flip() +  # Flip for horizontal barplot
+  labs(x = "", y = "Mean abundance", title = '45 (m)') +
+  my_theme +
+  theme(legend.position = 'none') +
+  #theme(legend.position = c(.7, 0.2), 
+  #      legend.direction = "horizontal",
+  #      legend.title.position = "top",
+  #      legend.text = element_text(hjust = .3, vjust = .1, angle = 315, size = 12)) +
+  theme(legend.title.position = "right",
+  legend.text = element_text(hjust = 0, vjust = .5, angle = 0, size = 12)) +
+  theme(axis.text.y = element_text(face = "italic")) +
+ scale_y_log10()
+p4
+
+p3 + p4
+
+
+```
+
+
+##heatmaps
+
+```{r}
+
+# Group by fish species and depth to calculate mean for each depth
+species_df <- df %>%
+  group_by(fish_spp, depth_cat, sample) %>%
+  summarise(sum_abundance = sum(count),
+            sum_biomass = sum(biomass), .groups = 'drop') %>%
+  group_by(fish_spp, depth_cat) %>%
+  summarise(mean_abundance = mean(sum_abundance),
+            mean_biomass = mean(sum_biomass), .groups = 'drop')
+
+# Group by species only to calculate combined mean abundance and biomass
+combined_df <- df %>%
+  group_by(fish_spp, sample) %>%
+  summarise(sum_abundance = sum(count),
+            sum_biomass = sum(biomass), .groups = 'drop') %>%
+  group_by(fish_spp) %>%
+  summarise(mean_abundance = mean(sum_abundance),
+            mean_biomass = mean(sum_biomass), .groups = 'drop') %>%
+  mutate(depth_cat = 'overall')  # Add a 'combined' depth category
+
+species_df2 <- bind_rows(species_df, combined_df)
+
+species_df2$fish_spp <- gsub('_', ' ', species_df2$fish_spp)
+species_df2$depth_cat <- factor(species_df2$depth_cat, levels = c('overall', '25', '45'))
+
+p_abundance <- ggplot(species_df2, aes(x = reorder(fish_spp, mean_abundance), y = as.factor(depth_cat), fill = (mean_abundance)))+
+  scale_y_discrete(breaks = c('25','45','overall'), 
+                   labels = c('25 (m)', '45 (m)', 'Overall')) +
+  geom_tile(color = "white", stat = 'identity', size =1) +
+  scale_fill_viridis_c(trans='log10', option='magma', end=.9, direction =-1) +
+  coord_flip() +
+  labs(x='Species', y = 'Survey depth', fill = 'Mean \nabundance') +
+  my_theme +
+  theme(axis.text.y = element_text(face = "italic"), legend.title.position = 'right', axis.text.x=element_text(angle = 45, vjust=.5)) 
+  
+p_abundance
+
+str(species_df2$depth_cat)
+
+
+p_biomass <- ggplot(species_df2, aes(x = reorder(fish_spp, mean_biomass), y = depth_cat, fill = (mean_biomass/1000)))+
+   scale_y_discrete(breaks = c('25','45','overall'), 
+                    labels = c('25 (m)', '45 (m)', 'Overall')) +
+  geom_tile(color = "white", stat = 'identity', size =1) +
+  scale_fill_viridis_c(option='magma', end=.9, direction =-1) +
+  coord_flip() +
+  labs(x='Species', y = 'Survey depth', fill = 'Mean \nbiomass\n(kg)') +
+  my_theme +
+  theme(axis.text.y = element_text(face = "italic"), legend.title.position = 'right', axis.text.x=element_text(angle = 45, vjust=.5)) 
+  
+
+p_biomass
+
+```
+
+##export plots
+
+```{r}
+
+png(file=file.path(output_directory, "family_species_biomass_plots.png"), height = 4500, width = 6500, res = 350)
+(p1 + p2 + p_biomass) + 
+  plot_layout(guides = 'collect') + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)'))) & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+png(file=file.path(output_directory, "family_species_abundance_plots.png"), height = 4500, width = 6500, res = 350)
+(p3 + p4 + p_abundance) + 
+  plot_layout(guides = 'collect') + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)'))) & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+
+tiff(file=file.path(output_directory, "family_species_biomass_plots.tif"), height = 4500, width = 6500, res = 350)
+(p1 + p2 + p_biomass) + 
+  plot_layout(guides = 'collect') + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)'))) & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+tiff(file=file.path(output_directory, "family_species_abundance_plots.tif"), height = 4500, width = 6500, res = 350)
+(p3 + p4 + p_abundance) + 
+  plot_layout(guides = 'collect') + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)'))) & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+jpeg(file=file.path(output_directory, "Figure_3.jpg"), height = 4500, width = 6500, res = 350)
+(p1 + p2 + p_biomass) + 
+  plot_layout(guides = 'collect') + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)'))) & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+jpeg(file=file.path(output_directory, "Figure_4.jpg"), height = 4500, width = 6500, res = 350)
+(p3 + p4 + p_abundance) + 
+  plot_layout(guides = 'collect') + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)'))) & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+```
+
+#Trophic guild analysis 
+
+```{r}
+# tidy workspace
+rm(combined_df, family_df, p_abundance, p_biomass, p1, p2, p3, p4, species_df, species_df2)
+
+table(df$foodweb) # go from fishbase because le gall et al 2024 did
+
+trophic_df <- df %>%
+  group_by(sample, foodweb, depth_cat) %>%
+  summarise(sum_biomass = sum(biomass),
+            sum_abundance = sum(count))
+
+trophic_df$depth_cat <- factor(trophic_df$depth_cat, levels = c('25', '45'))
+
+p1 <- ggplot(trophic_df, aes(foodweb, sum_biomass/1000)) +
+  geom_boxplot() +
+  geom_point() +
+  labs(x='', y='Biomass \n(kg)') +
+  my_theme + 
+  theme(axis.text.x = element_blank()) 
+
+p1
+
+
+p2 <- ggplot(trophic_df, aes(foodweb, sum_biomass/1000, fill = depth_cat)) +
+  geom_boxplot(position = position_dodge(width = 0.75)) +  # Ensures boxes are dodged by depth_cat
+  geom_point(position = position_dodge(width = 0.75)) +
+  scale_fill_manual(values=c('#87CEEB','#4169E1')) +
+  labs(x='', y='') +
+  my_theme + 
+  theme(legend.position = 'none') +
+  theme(axis.text.x = element_blank()) +
+  stat_compare_means(aes(group = depth_cat), method = "wilcox.test", label = "p.signif", size = 15, hide.ns = T, vjust=1) 
+p2
+
+ggplot(trophic_df, aes(depth_cat, sum_biomass/1000, fill = depth_cat)) +
+   geom_boxplot(position = position_dodge(width = 0.75)) +  # Ensures boxes are dodged by depth_cat
+  geom_point(position = position_dodge(width = 0.75)) +
+  scale_fill_manual(values = c( '#87CEEB','#4169E1')) +
+  facet_wrap(~ foodweb) +   # Creates a separate panel for each food web
+  my_theme +
+  labs(x = "Food Web", y = "Biomass (kg)", fill = "Depth Category") +
+  theme(
+    legend.position = c(0.85, 0.15),  # Moves legend inside the plot (adjust as needed)
+    legend.box.just = "right",        # Aligns the legend to the right
+    legend.background = element_rect(fill = "transparent")  # Transparent legend background
+  )
+
+
+# abundance 
+
+p3 <- ggplot(trophic_df, aes(foodweb, sum_abundance)) +
+  geom_boxplot() +
+  geom_point() +
+  my_theme +
+  labs(x='Trophic guild', y='Total abundance') +
+  theme(axis.text.x = element_text(angle=45, vjust =1, hjust=1)) +
+  scale_y_log10()
+
+p3
+
+p4 <- ggplot(trophic_df, aes(foodweb, sum_abundance, fill = depth_cat)) +
+   geom_boxplot(position = position_dodge(width = 0.75)) +  # Ensures boxes are dodged by depth_cat
+  geom_point(position = position_dodge(width = 0.75)) +
+  scale_fill_manual(values=c('#87CEEB','#4169E1')) +
+  my_theme +
+  labs(x='Trophic guild', y='') +
+  theme(axis.text.x = element_text(angle=45, vjust =1, hjust=1)) +
+  theme(legend.position = 'none') +
+  scale_y_log10() +
+  stat_compare_means(aes(group = depth_cat), method = "wilcox.test", label = "p.signif", size = 15, hide.ns = T, vjust=1) 
+p4
+
+
+(p1+p2)/(p3+p4) + plot_layout(guides = 'collect')
+
+```
+##trophic guild stats
+
+```{r}
+names(trophic_df)
+
+hist(trophic_df$sum_biomass)
+hist(trophic_df$sum_abundance)
+shapiro.test(trophic_df$sum_biomass)
+shapiro.test(trophic_df$sum_abundance)
+
+kruskal.test(sum_biomass~foodweb, data = trophic_df)
+kruskal.test(sum_abundance~foodweb, data = trophic_df)
+mcomp <- dunnTest(sum_abundance~foodweb, data = trophic_df)
+mcomp
+
+trophic_groups <- unique(trophic_df$foodweb)
+# loop for each trophic group
+mwu_result1 <- data.frame(
+  Trophic_Group = character(), 
+  W = numeric(), 
+  P_Value = numeric(), 
+  stringsAsFactors = FALSE
+)
+
+# Loop through each trophic group and perform the Kruskal-Wallis test
+for (group in trophic_groups) {
+  # Subset data for the current trophic group
+  subset_data <- trophic_df[trophic_df$foodweb == group, ]
+  
+  # Perform the Kruskal-Wallis test
+  test_result <- wilcox.test(sum_abundance ~ depth_cat, data = subset_data)
+  
+  # Store the group name, chi-squared statistic, and p-value in the dataframe
+  mwu_result1 <- rbind(mwu_result1, 
+                           data.frame(Trophic_Group = group, 
+                                      W = test_result$statistic, 
+                                      P_Value = test_result$p.value))
+}
+
+# Print the results as a tidy dataframe
+mwu_result1
+
+
+# being lazy doing seperately for biomass
+mwu_results2 <- data.frame(
+  Trophic_Group = character(), 
+  Chi_Square = numeric(), 
+  P_Value = numeric(), 
+  stringsAsFactors = FALSE
+)
+
+# Loop through each trophic group and perform the Kruskal-Wallis test
+for (group in trophic_groups) {
+  # Subset data for the current trophic group
+  subset_data <- trophic_df[trophic_df$foodweb == group, ]
+  
+  # Perform the Kruskal-Wallis test
+  test_result <- wilcox.test(sum_biomass ~ depth_cat, data = subset_data)
+  
+  # Store the group name, chi-squared statistic, and p-value in the dataframe
+  mwu_results2 <- rbind(mwu_results2, 
+                           data.frame(Trophic_Group = group, 
+                                      Chi_Square = test_result$statistic, 
+                                      P_Value = test_result$p.value))
+}
+
+# Print the results as a tidy dataframe
+mwu_results2
+
+```
+
+
+
+##trophic ordination
+
+```{r}
+# trophic matrix 
+trophic_ord_df <- df %>%
+  group_by(sample, depth_cat, foodweb) %>%
+  summarise(total_abundance=sum(count)) %>%
+  pivot_wider(names_from = foodweb, values_from = total_abundance)
+trophic_ord_df[is.na(trophic_ord_df)] <- 0
+
+# community matrix
+mat2 <- as.matrix(trophic_ord_df[,-c(1:2)])
+# sqrt transform to make allow model fit 
+mat2 <- sqrt(mat2)
+# create a distance matrix
+dist2 <- vegdist(mat2, method = 'bray')
+
+# run a permanova for statisical comparison
+set.seed(123)
+comp2 <- adonis2(dist2~as.factor(trophic_ord_df$depth_cat), data = trophic_ord_df, permutations = 9999)
+comp2
+
+#nMDS
+set.seed(123)
+m2 <- metaMDS(mat2, distance = 'bray', k=2, autotransform = T, trymax = 100)
+m2
+
+stressplot(m2)
+
+
+# extract scores to plot on ggplot
+scores2 <- data.frame(m2$points)
+
+scores2$depth <- trophic_ord_df$depth_cat
+
+# plot
+
+scores2$depth <- factor(scores2$depth, levels = c('25', '45'))
+
+p_trophic_ord <- ggplot(data=scores2,aes(x=MDS1, y=MDS2, colour=depth, fill = depth)) +
+  stat_ellipse(type='t', level = .95, size =1.5, linetype = 1)+
+  geom_point(position=position_jitter(.1), shape=19, size = 5)+
+  my_theme +
+  scale_color_manual(values=c('#87CEEB','#4169E1')) +
+  scale_fill_manual(values=c('#87CEEB','#4169E1')) +
+  labs(x='MDS1', y='MDS2', fill = 'Depth (m)', colour = 'Depth (m)') +
+   annotate("text", x = 0.4, y = -.4, label = "Stress = 0.127", size = 6)
+p_trophic_ord
+
+
+```
+##trophic plots 
+
+```{r}
+
+png(file=file.path(output_directory, "trophic_plots.png"), height = 4500, width = 5000, res = 350)
+(p1 + p2) / (p3 + p4) / (p_trophic_ord + guide_area() +
+  plot_layout(guides = 'collect')) + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)', '(D)', '(E)', ''))) & theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+tiff(file=file.path(output_directory, "trophic_plots.tif"), height = 4500, width = 5000, res = 350)
+(p1 + p2) / (p3 + p4) / (p_trophic_ord + guide_area() +
+  plot_layout(guides = 'collect')) + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)', '(D)', '(E)', ''))) & theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+jpeg(file=file.path(output_directory, "Figure_5.jpg"), height = 4500, width = 5000, res = 350)
+(p1 + p2) / (p3 + p4) / (p_trophic_ord + guide_area() +
+  plot_layout(guides = 'collect')) + 
+  plot_annotation(tag_levels = list(c('(A)', '(B)', '(C)', '(D)', '(E)', ''))) & theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+```
+#Picklebank site map
+
+
+
+```{r}
+library(sf)
+library(terra)
+map1 <- st_read('C:/Users/jackv/OneDrive - Central Caribbean Marine Institute/Shapefiles/ZSL002_ModelledSeamounts2011_v1/DownloadPack-14_001_ZSL002_ModelledSeamounts2011_v1/01_Data/Seamounts/Seamounts.shp')
+
+plot(map1)
+
+xmin <- -81
+xmax <- -80
+ymin <- 20
+ymax <- 21
+
+ocean <- ne_download(type = "ocean", category = "physical", scale = "large")
+ocean <- st_as_sf(ocean)
+
+
+
+p_map <- ggplot() +
+  geom_sf(data=ocean,  fill = "#5ECFFA") +  
+  coord_sf(xlim=c(-85.21056,-75.0936944), ylim=c(15.62638, 25.790000), expand = T) +
+  geom_point(aes(x=-80.416667, y=20.416667, size=4), shape = 18) +
+  labs(x='',y='') +
+  my_theme +
+  theme(legend.position = 'none') +
+  annotate("text", x=-82, y=18, label = "Caribbean 
+Sea", size = 8) +
+  theme(axis.title.x = element_text(size = 22, color = "black"), axis.title.y = element_text(size = 22, color = "black"), text=element_text(size=16)) +
+  theme(axis.text.y = element_text(size=16, color="black"), axis.text.x = element_text(size=16, color="black", angle = 0, vjust = .0)) +
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", linewidth =1, fill =NA)
+  )
+
+p_map
+
+
+b1 <- ggplot() + theme_void()
+b2 <- ggplot() + theme_void()
+b3 <- ggplot() + theme_void()
+
+
+png(file=file.path(output_directory, "picklemap_plots.png"), height = 3500, width = 4500, res = 350)
+(p_map + b1) / (b2 + b3) + plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+tiff(file=file.path(output_directory, "picklemap_plots.tif"), height = 3500, width = 4500, res = 350)
+(p_map + b1) / (b2 + b3) + plot_annotation(tag_levels = 'A') & 
+  theme(plot.tag = element_text(size = 30, face = "bold"))
+dev.off()
+
+tiff(file=file.path(output_directory, "PickleBank_solitary.tif"), height = 2000, width = 2000, res = 350)
+p_map
+dev.off()
+
+check <- st_read('C:/Users/jackv/OneDrive - Central Caribbean Marine Institute/Shapefiles/Pickle Dive Sites.kml')
+plot(check)
+crs(check)
+ggplot() +
+  geom_sf(data=check) +
+  #geom_sf(data=ocean,  fill = "#5ECFFA") +  
+  coord_sf(xlim=c(-80.35,-80.5), ylim=c(20.3,20.45), expand = T) +
+  #geom_point(aes(x=-80.416667, y=20.416667, size=4), shape = 18) +
+  my_theme
+
+
+```
